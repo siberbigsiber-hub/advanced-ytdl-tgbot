@@ -10,7 +10,7 @@ import yt_dlp
 
 from config import BOT_TOKEN
 from merge_tools import mux_streams
-from youtube_utils import extract_metadata
+from youtube_utils import extract_metadata, BotProtectedVideoError
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 ACTIVE_JOBS = {}
@@ -18,6 +18,18 @@ ACTIVE_JOBS = {}
 
 def safe_text(value):
     return str(value).replace("<", "&lt;").replace(">", "&gt;")
+
+
+def protected_video_notice():
+    return (
+        "<b>هذا الفيديو محمي بنظام أمان YouTube</b>\n\n"
+        "أسباب شائعة:\n"
+        "• الفيديو يحتاج كوكيز جديدة أو جلسة متصفح\n"
+        "• أو أنه محمي/مقيد من YouTube\n"
+        "• أو أن الرابط من فيديو خاص/مقيد\n\n"
+        "حاول بإرسال فيديو عام/public، أو استخدم ملف كوكيز جديد من متصفحك.\n"
+        "إذا كان الرابط محميًا، البوت لا يستطيع تخطي حماية YouTube بدون كوكيز أو جلسة فعّالة."
+    )
 
 
 def build_choose_container(url):
@@ -112,12 +124,13 @@ def download_format(url, format_id, output_path):
 def start_cmd(message):
     bot.reply_to(
         message,
-        "<b>مرحباً بك في بوت يوتيوب المتقدم</b>\n"
+        "<b>مرحباً بك في بوت يوتيوب المتقدم</b>\n\n"
         "أرسل رابط الفيديو، ثم اختر نوع الحاوية:\n"
         "• MP4 Compatible\n"
         "• WebM Compatible\n"
-        "• ترجمة إن وجدت\n"
-        "ملاحظة: هذا المشروع مصمم للـ RAM منخفضة ويعتمد على دمج الحاويات فقط مع الترميزات المتوافقة."
+        "• ترجمة إن وجدت\n\n"
+        "ملاحظة: بعض فيديوهات YouTube محمية أو تحتاج كوكيز/جلسة جديدة.\n"
+        "البوت سيحاول التعامل معها بشكل ذكي."
     )
 
 
@@ -173,6 +186,9 @@ def handle_message(message):
             "اختر نوع الحاوية:",
             reply_markup=build_choose_container(text),
         )
+
+    except BotProtectedVideoError:
+        bot.reply_to(message, protected_video_notice())
     except Exception as exc:
         bot.reply_to(message, f"حدث خطأ أثناء تجهيز الفيديو: {str(exc)}")
 
@@ -237,6 +253,8 @@ def handle_container(call):
             )
         else:
             bot.send_message(call.message.chat.id, f"<b>{title}</b>\nلا توجد ترجمات متاحة لهذا الفيديو.")
+    except BotProtectedVideoError:
+        bot.send_message(call.message.chat.id, protected_video_notice())
     except Exception as exc:
         bot.send_message(call.message.chat.id, f"حدث خطأ أثناء تجهيز الخيارات: {str(exc)}")
 
@@ -341,7 +359,6 @@ def merge_command(message):
         output_path = os.path.join(temp_dir, f"final_output.{container}")
 
         try:
-            # audio
             ydl_audio_opts = {
                 "format": audio_id,
                 "outtmpl": audio_path,
@@ -350,10 +367,13 @@ def merge_command(message):
                 "noplaylist": True,
                 "progress_hooks": [progress_hook],
             }
+            cookies_file = os.getenv("YT_COOKIES_FILE")
+            if cookies_file and os.path.exists(cookies_file):
+                ydl_audio_opts["cookies"] = cookies_file
+
             with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
                 ydl.download([url])
 
-            # video
             ydl_video_opts = {
                 "format": video_id,
                 "outtmpl": video_path,
@@ -362,6 +382,9 @@ def merge_command(message):
                 "noplaylist": True,
                 "progress_hooks": [progress_hook],
             }
+            if cookies_file and os.path.exists(cookies_file):
+                ydl_video_opts["cookies"] = cookies_file
+
             with yt_dlp.YoutubeDL(ydl_video_opts) as ydl:
                 ydl.download([url])
 
@@ -374,6 +397,10 @@ def merge_command(message):
             job["logs"].append("تم إرسال الملف إلى Telegram")
             bot.send_message(message.chat.id, "✅ تم إنجاز التنزيل بنجاح.", reply_markup=build_after_menu())
 
+        except BotProtectedVideoError:
+            job["status"] = "مقيد"
+            job["logs"].append("الفيديو محمي ويحتاج كوكيز/جلسة جديدة من YouTube")
+            bot.send_message(message.chat.id, protected_video_notice())
         except RuntimeError as exc:
             if "تم إلغاء التنزيل" in str(exc):
                 job["status"] = "تم الإلغاء"
@@ -383,12 +410,22 @@ def merge_command(message):
                 job["status"] = "فشل"
                 job["logs"].append(f"فشل: {str(exc)}")
                 bot.send_message(message.chat.id, f"❌ فشل التنزيل: {str(exc)}")
-
         except Exception as exc:
-            job["status"] = "فشل"
-            job["logs"].append(f"فشل: {str(exc)}")
-            bot.send_message(message.chat.id, f"❌ فشل التحميل: {str(exc)}")
-
+            err_msg = str(exc).lower()
+            if (
+                "sign in to confirm you’re not a bot" in err_msg
+                or "sign in to confirm you are not a bot" in err_msg
+                or "cookies" in err_msg
+                or "login" in err_msg
+                or "authentication" in err_msg
+            ):
+                job["status"] = "مقيد"
+                job["logs"].append("الفيديو محمي بنظام أمان YouTube أو يحتاج كوكيز جديدة.")
+                bot.send_message(message.chat.id, protected_video_notice())
+            else:
+                job["status"] = "فشل"
+                job["logs"].append(f"فشل: {str(exc)}")
+                bot.send_message(message.chat.id, f"❌ فشل التحميل: {str(exc)}")
         finally:
             try:
                 for path in [audio_path, video_path, output_path]:
