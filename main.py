@@ -1,27 +1,19 @@
+import os
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from config import PORT
+from server import app as flask_app
 from bot_handlers import bot
 
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
-
-    def log_message(self, *args):
-        pass
+PORT = int(os.getenv("PORT", 10000))
 
 
-def run_health_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthCheckHandler)
-    server.serve_forever()
+def run_bot():
+    try:
+        bot.infinity_polling(timeout=10, long_polling_timeout=10)
+    except Exception as exc:
+        print(f"[BOT ERROR] {exc}")
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_health_server, daemon=True).start()
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    threading.Thread(target=run_bot, daemon=True).start()
+    flask_app.run(host="0.0.0.0", port=PORT, debug=False)
