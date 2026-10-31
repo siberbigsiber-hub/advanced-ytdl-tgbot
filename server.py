@@ -3,8 +3,9 @@ from flask import Flask, request, jsonify, send_from_directory
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
-COOKIES_PATH = os.getenv("YT_COOKIES_FILE", "/app/cookies.txt")
-os.makedirs(os.path.dirname(COOKIES_PATH), exist_ok=True)
+COOKIES_PATH = os.getenv("YT_COOKIES_FILE", os.path.abspath(os.path.join(os.getcwd(), "cookies.txt")))
+parent_dir = os.path.dirname(COOKIES_PATH) or "."
+os.makedirs(parent_dir, exist_ok=True)
 
 
 @app.route("/")
@@ -52,3 +53,7 @@ def clear_cookies():
         return jsonify({"status": "ok", "message": "تم حذف ملف cookies بنجاح."})
     except Exception as exc:
         return jsonify({"error": f"خطأ: {str(exc)}"}), 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
